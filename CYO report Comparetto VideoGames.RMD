@@ -1,7 +1,87 @@
-#######################################################
-###       data load
-#######################################################
+---
+title: "Choose your own project: Video Games Sales"
+author: "Axel Comparetto-Berthier"
+date: "18/08/2020"
+output: pdf_document
+---
 
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+```
+
+# I)Introduction
+
+This report marks the end of the "Choose Your Own Project" included in the HarvardX Data Science course PH125.9.
+Please note that english is not my native language, so there may be errors in this report. I must also mention
+that the code for this project was created with R 4.0.2 in case you want to run it.
+
+## I)A)Dataset description
+
+For this project, I selected the Video Games Sales dataset available on Kaggle at the following URL:
+[https://www.kaggle.com/rush4ratio/video-game-sales-with-ratings](https://www.kaggle.com/rush4ratio/video-game-sales-with-ratings). 
+This dataset features pieces information for circa 17,000 video games, with around 7,000 games having all the 16 fields completed. These fields are:
+
+- The game name
+
+- The platform on which the game was released (note that for games released on several platforms there is a row for each platform)
+
+- The game's release year
+
+- The publisher and the developer of the game
+
+- The genre of the game (among 12 genres)
+
+- The Entertainment Software Rating Board (ESRB)'s rating of the game, indicating which audience the game is suited for
+
+NB: The platform, publisher, genre, year of release and ESRB rating are referred in this report as "environmental variables".
+
+- The mean review scores of the game for both critics and users (and the number of reviews) based on the Metacritic website
+
+- The number of million units sold in each region (North America, European Union, Japan and the rest of the world)
+
+- The number of million units sold worldwide
+
+## I)B)Aim of this project and key steps
+
+The aim of this project is to develop an algorithm that will be able to predict the number of units of a game sold worldwide, given the environmental variables and the Metacritic reviews. This may seem like a useless scientific challenge, but the video game industry is actually weighting more 32,000 jobs worldwide, with revenues over 82 billions USD in 2013 (which is twice as much as the cinematographic industry) and growing ever since (source: Wikipedia).
+
+Key steps performed included data loading and processing, the fitting of a linear model (used alongside with regularization) and a prediction using the K-nearest-neighbors algorithm (alongside with cross-validation). I ultimately wanted to see if I could have the best of both models.
+
+## I)C)Measurement metric
+
+To measure how well the algorithm performed, I must foremost chose a metric of evaluation. This problem is a regression problem, so the most adapted metric is usually the root mean square error (RMSE). However, using the absolute error (i.e. the error in number of copies) is not a good solution here, because of the scale difference in sales for different games. This would lead to small relative errors on well-sold games weight more than big relative errors on games with a small amount of units sold.
+
+Instead I selected to use a relative RMSE, to be computed as below, with $N$ being the number of games and $i$ the game index:
+$$ error_i = \frac{(sales_i - prediction_i)}{sales_i} $$
+Note that the sign of the error is irrelevant, because we use squared error to compute RMSE.
+$$ RMSE = \sqrt{\frac{1}{N} \sum_{[1,N]} (error_i^2)} $$
+
+Here is a trivial example with only two games:
+```{r example, echo=FALSE}
+gameID <- c(1, 2)
+sales <- c(1000, 100)
+predictions <- c(1200, 50)
+error_abs <- sales - predictions
+error_rel <- (sales - predictions)/sales
+mat <- cbind(gameID, sales, predictions, error_abs, error_rel)
+RMSE_abs <- sqrt(mean(mat[,4]^2))
+RMSE_rel <- sqrt(mean(mat[,5]^2))
+mat
+"Absolute RMSE"
+RMSE_abs
+"Relative RMSE"
+RMSE_rel
+```
+Here, the difference of scale make it seems like the prediction for game 1 is worse than the one for game 2, although it is relatively better. Furthermore, when dealing with millions of copies, absolute RMSE can be a bit inconvenient since the numbers will be way bigger than the example.
+
+The relative RMSE seemed to be a better metric for measuring the efficiency of the algorithm.
+
+# II)Methods and analysis
+
+## II)A)Data loading, cleaning and processing
+
+The first step of this project is the installation and activation of the required libraries:
+```{r libraries}
 ###download required libraries
 if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
 if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
@@ -13,14 +93,18 @@ library(tidyverse)
 library(caret)
 library(dplyr)
 library(readr)
-
+```
+Then one can load the dataset. Since the dataset is relatively small (1.54 MB) csv file, I chose to upload it to my own Github repository and use the read_csv function of the package readr to load it. Here is the head of the dataset:
+```{r download}
 ###download the dataset
 #data originally found here : https://www.kaggle.com/rush4ratio/video-game-sales-with-ratings
 #uploaded to my github repository
 url <- "https://raw.githubusercontent.com/AxelComparetto/RdataSciennce_VideoGameRating/master/Video_Games_Sales_as_at_22_Dec_2016.csv"
 VideoGames <- read_csv(url)
 head(VideoGames)
-
+```
+For this study, I do not take the games with missing information into account, thus the use of na.omit. I then created a "gamedId" column and changed some scales for more clarity:
+```{r scales}
 ###data cleaning
 VideoGames <- na.omit(VideoGames) #clear the rows with missing values
 VideoGames <- VideoGames %>% mutate(gameId = which(Name == Name)) #create a gameId column
@@ -36,15 +120,19 @@ VideoGames <- VideoGames %>% mutate(NA_Sales=NA_Sales*10^6,
                                     JP_Sales=JP_Sales*10^6,
                                     Other_Sales=Other_Sales*10^6,
                                     Global_Sales=Global_Sales*10^6)
-
-###generate training and test set
+```
+The next step is to generate a training and a test set. To chose the ratio between training and test set, I looked at how many unique predictors there are.
+```{r testtrain}
 #evaluate the number of unique predictors
 length(unique(VideoGames$Platform))
 length(unique(VideoGames$Genre))
 length(unique(VideoGames$Year_of_Release))
 length(unique(VideoGames$Publisher))
-length(unique(VideoGames$Developer)) #too many developers to split sets equally
+length(unique(VideoGames$Developer)) #too many developers to ensure every dev in test set is in training set
 length(unique(VideoGames$Rating))
+```
+There are many publishers, so that I should not use a 50/50 data partition, to ensure there are several games of the same developer within the training set with different genres, rating and so on. This is why a partition of 80% data in the training set and 20% in the test set seemed more appropriate to me.
+```{r partition}
 #create the data partition
 set.seed(1, sample.kind = "Rounding")
 indexes <- createDataPartition(y=VideoGames$gameId, times=1, p=0.2, list=FALSE)
@@ -63,18 +151,23 @@ removed <- anti_join(temp, test)
 training <- rbind(training, removed)
 
 ###free memory
-rm(url, vec_reorder, temp, removed, indexes, VideoGames)
+rm(url, vec_reorder, temp, removed, indexes)
+```
 
 
+## II)B)Naive method
 
-#######################################################
-###       data processing
-#######################################################
-
-###looking for number of sales' scales
+I wanted to have an insight of the distribution of the global sales in the training values, so I used histograms.
+```{r hist, echo=FALSE}
+#looking for number of sales' scales
 hist(training$Global_Sales)
 hist(log10(training$Global_Sales) )
+```
+With these two histograms, I realized that working with the raw amount of copies sold was not convenient, so I tried to work with the log. Furthermore, my basic knowledge about video games sales is that the effects of biases on the sales are likely to be multiplicative, rather than additive: the first histogram shows the difference of scale between the least and the most sold games is better expressed with a ration, not with a difference. This is what we observe in reality, because AAA games are sold many more times than small games by independent studios.
 
+The second histogram shows that the distribution of the $log_{10}$ of the number of copies sold is somewhat close to normal approximation, which calls for a linear model. Here is a qqplot:
+
+```{r qqplot, echo=FALSE}
 #qqplot of the sales
 p <- seq(0.01, 0.99, 0.01) 
 sample_quantiles <- quantile(log10(training$Global_Sales), p)
@@ -85,13 +178,11 @@ rm(p, sample_quantiles, theoretical_quantiles)
 
 #making new column for the log transform
 training <- training %>% mutate(logGlobal_Sales=log10(Global_Sales))
+```
 
+Now that I selected the data partition, the measurement metric and the scale I want to work with, I wanted to have some reference I could compare my models to, so I ran the simplest of predictions: predicting that every game has sold the average amount of copies. This average is referred to as $\mu$.
 
-
-#######################################################
-###       worldwide: naive approach
-#######################################################
-
+```{r naive}
 #defining how to compute the RMSE
 fun_RMSE <- function(actual_values, predictions)
 {
@@ -104,17 +195,25 @@ log10_mu <- mean(training$logGlobal_Sales) #overall mean of the log10 sales worl
 #making naive predictions: every game sold the average number of copies
 pred = 10^log10_mu
 RMSE <- fun_RMSE(test$Global_Sales, pred)
-
 #creating a matrix to keep track of successive RMSEs
 mat_RMSE <- matrix(data = c("Worldwide naive approach: average", RMSE), nrow = 1, ncol = 2)
 colnames(mat_RMSE) <- c("Method", "RMSE")
+```
+I stored the RMSE for each method in a matrix. Here is the first row:
+```{r mat_RMSE1, echo=FALSE}
 mat_RMSE
+```
+The naive method has an RMSE of about 3.83. Since the error used to compute the RMSE is a percentage, the RMSE is also a percentage, meaning that the naive method's prediction is 383% off, which is a lot of course. Let's see if I can improve it. 
 
+## II)C)Using a linear model
 
-#######################################################
-### worldwide: bias evaluation: publisher, genre, platform, year of release and rating
-#######################################################
+The first idea I had was a linear model: I would use the biases for each environmental variable and the reviews to predict global sales.
 
+### II)C)1)Using environmental bias
+
+I started with the environmental biases. I evaluated each bias in the following order: Publisher, Platform, Genre, Year of release, Rating and Developer. The order is irrelevant on the final result but changes slightly the evaluation of each bias, since the evaluation of a bias takes the biases already evaluated into account. The biases are already computed in log scale Here is the code for the evaluation of the biases:
+
+```{r biases1}
 ###publisher bias
 bias_pub <- training %>%
   group_by(Publisher) %>%
@@ -122,14 +221,6 @@ bias_pub <- training %>%
             count_pu = n(),
             sum_bpulog = sum(logGlobal_Sales - log10_mu),
             .groups="drop")
-bias_pub %>%
-  ggplot(aes(Publisher, b_pu)) +
-  geom_col() +
-  xlab("Publisher") +
-  ylab("Publisher bias (log scale)") +
-  ggtitle("Effect of the publisher on global sales")
-mean(bias_pub$b_pu)
-sd(bias_pub$b_pu)
 
 ###platform bias
 bias_plat <- training %>%
@@ -138,15 +229,7 @@ bias_plat <- training %>%
   summarise(b_pla  = mean(logGlobal_Sales -log10_mu - b_pu),
             count_pla = n(),
             sum_bplalog = sum(logGlobal_Sales - log10_mu - b_pu),
-            .groups="drop") 
-bias_plat %>%
-  ggplot(aes(Platform, b_pla)) +
-  geom_col() +
-  xlab("Platform") +
-  ylab("Platform bias (log scale)") +
-  ggtitle("Effect of the platform on global sales")
-mean(bias_plat$b_pla)
-sd(bias_plat$b_pla)
+            .groups="drop")
 
 ###genre bias
 bias_genre <- training %>%
@@ -157,14 +240,6 @@ bias_genre <- training %>%
             count_ge = n(),
             sum_bgelog = sum(logGlobal_Sales - log10_mu - b_pu - b_pla),
             .groups="drop")
-bias_genre %>%
-  ggplot(aes(Genre, b_ge)) +
-  geom_col() +
-  xlab("Genre") +
-  ylab("Genre bias (log scale)") +
-  ggtitle("Effect of the genre on global sales")
-mean(bias_genre$b_ge)
-sd(bias_genre$b_ge)
 
 ###year of release bias
 bias_yor <- training %>%
@@ -176,14 +251,6 @@ bias_yor <- training %>%
             count_yor = n(),
             sum_byorlog = sum(logGlobal_Sales - log10_mu - b_pu - b_pla - b_ge),
             .groups="drop")
-bias_yor %>%
-  ggplot(aes(Year_of_Release, b_yor)) +
-  geom_col() +
-  xlab("Release year") +
-  ylab("Release year bias (log scale)") +
-  ggtitle("Effect of the year of release on global sales")
-mean(bias_yor$b_yor)
-sd(bias_yor$b_yor)
 
 ###rating bias
 bias_rat <- training %>%
@@ -196,14 +263,6 @@ bias_rat <- training %>%
             count_rat = n(),
             sum_bratlog = sum(logGlobal_Sales - log10_mu - b_pu - b_pla - b_ge - b_yor),
             .groups="drop")
-bias_rat %>%
-  ggplot(aes(Rating, b_rat)) +
-  geom_col() +
-  xlab("Rating") +
-  ylab("Rating bias (log scale)") +
-  ggtitle("Effect of rating on global sales")
-mean(bias_rat$b_rat)
-sd(bias_rat$b_rat)
 
 ###developer bias
 bias_dev <- training %>%
@@ -217,214 +276,277 @@ bias_dev <- training %>%
             count_dev = n(),
             sum_bdevlog = sum(logGlobal_Sales - log10_mu - b_pu - b_pla - b_ge - b_yor - b_rat),
             .groups="drop")
+
+###computes the bias fro each row of the test set
+vec_bias_pub <- sapply(test$Publisher, function(x)
+  bias_pub$b_pu[which(bias_pub$Publisher == x)])
+vec_bias_pla <- sapply(test$Platform, function(x)
+  bias_plat$b_pla[which(bias_plat$Platform == x)])
+vec_bias_ge <- sapply(test$Genre, function(x)
+  bias_genre$b_ge[which(bias_genre$Genre == x)])
+vec_bias_yor <- sapply(test$Year_of_Release, function(x)
+  bias_yor$b_yor[which(bias_yor$Year_of_Release == x)])
+vec_bias_rat <- sapply(test$Rating, function(x)
+  bias_rat$b_rat[which(bias_rat$Rating == x)])
+vec_bias_dev <- sapply(test$Developer, function(x)
+  bias_dev$b_dev[which(bias_dev$Developer == x)])
+```
+```{r biases graph, echo=FALSE}
+bias_pub %>%
+  ggplot(aes(Publisher, b_pu)) +
+  geom_col() +
+  xlab("Publisher") +
+  ylab("Publisher bias (log scale)") +
+  ggtitle("Effect of the publisher on global sales")
+
+bias_plat %>%
+  ggplot(aes(Platform, b_pla)) +
+  geom_col() +
+  xlab("Platform") +
+  ylab("Platform bias (log scale)") +
+  ggtitle("Effect of the platform on global sales")
+
+bias_genre %>%
+  ggplot(aes(Genre, b_ge)) +
+  geom_col() +
+  xlab("Genre") +
+  ylab("Genre bias (log scale)") +
+  ggtitle("Effect of the genre on global sales")
+
+bias_yor %>%
+  ggplot(aes(Year_of_Release, b_yor)) +
+  geom_col() +
+  xlab("Release year") +
+  ylab("Release year bias (log scale)") +
+  ggtitle("Effect of the year of release on global sales")
+
+bias_rat %>%
+  ggplot(aes(Rating, b_rat)) +
+  geom_col() +
+  xlab("Rating") +
+  ylab("Rating bias (log scale)") +
+  ggtitle("Effect of rating on global sales")
+
 bias_dev %>%
   ggplot(aes(Developer, b_dev)) +
   geom_col() +
   xlab("Developer") +
   ylab("Developer bias (log scale)") +
   ggtitle("Effect of developer on global sales")
+```
+The graphs, associated with the computation of the mean and standard deviation of the biases, are helping to know whether a predictor is relevant or not: if the absolute value of the mean is less than the standard deviation, it means that the predictor has high variability, that must be considered.
+```{r biases2}
+#publisher bias mean and sd
+mean(bias_pub$b_pu)
+sd(bias_pub$b_pu)
+#platform bias mean and sd
+mean(bias_plat$b_pla)
+sd(bias_plat$b_pla)
+#genre bias mean and sd
+mean(bias_genre$b_ge)
+sd(bias_genre$b_ge)
+#year of release bias mean and sd
+mean(bias_yor$b_yor)
+sd(bias_yor$b_yor)
+#rating bias mean and sd
+mean(bias_rat$b_rat)
+sd(bias_rat$b_rat)
+#developer bias mean and sd
 mean(bias_dev$b_dev)
 sd(bias_dev$b_dev)
-
-###computes the bias fro each row of the test set
-vec_bias_pub <- as.numeric(sapply(test$Publisher, function(x)
-  bias_pub$b_pu[which(bias_pub$Publisher == x)]))
-vec_bias_pla <- as.numeric(sapply(test$Platform, function(x)
-  bias_plat$b_pla[which(bias_plat$Platform == x)]))
-vec_bias_ge <- as.numeric(sapply(test$Genre, function(x)
-  bias_genre$b_ge[which(bias_genre$Genre == x)]))
-vec_bias_yor <- as.numeric(sapply(test$Year_of_Release, function(x)
-  bias_yor$b_yor[which(bias_yor$Year_of_Release == x)]))
-vec_bias_rat <- as.numeric(sapply(test$Rating, function(x)
-  bias_rat$b_rat[which(bias_rat$Rating == x)]))
-vec_bias_dev <- as.numeric(sapply(test$Developer, function(x)
-  bias_dev$b_dev[which(bias_dev$Developer == x)]))
-
+```
+Using this criteria, it seems like all the predictors are relevant, with publisher being the most relevant and genre the least relevant. It calls for a linear model like this: 
+$$log_{10}(prediction) = log_{10}(\mu) + b_{pub} + b_{pla} + b_{ge} + b_{yor} + b_{rat} + b_{dev} $$
+With $\mu$ being the average amount of copies sold, $b$ the bias, respectively for Publisher, Platform, Genre, Year of release, Rating and Developer, and $\alpha$ $\beta$ and $\gamma$ being constants that optimize the linear model predictions. This linear model states that the biases have a multiplicative effect on global sales, due to the log property: 
+$$prediction = 10^{log_{10}(\mu) + b_{pub} + b_{pla} + b_{ge} + b_{yor} + b_{rat} + b_{dev}}$$
+$$prediction  = \mu\times10^{b_{pub}}\times10^{b_{pla}}\times10^{b_{ge}}\times10^{b_{yor}}\times10^{b_{rat}}\times10^{b_{dev}}$$
+Let's use this model to make predictions:
+```{r lm1}
 #using the four bias to make predictions
 pred = 10^(log10_mu + vec_bias_pub + vec_bias_pla + vec_bias_ge +
              vec_bias_yor + vec_bias_rat + vec_bias_dev)
 RMSE <- fun_RMSE(test$Global_Sales, pred)
 #keep track of RMSE
-mat_RMSE <- rbind(mat_RMSE,
-  c("LM: Worldwide with environmental bias (publisher, platform, genre, YoR, rating and dev)", RMSE))
+mat_RMSE <- rbind(mat_RMSE, c("LM: Worldwide with environmental bias (publisher, platform, genre, YoR, rating and dev)", RMSE))
+```
+```{r, echo=FALSE}
 mat_RMSE
+```
+The RMSE is now 2.86, which is better but still far from real sales.
 
-
-
-#######################################################
-###   worldwide: regularizing environmental bias
-#######################################################
-
+The use of regularization may help a little (for instance, a lot of developers in this set only produced one game and for some of them the bias is quite high). The code below regularize each bias successively, taking the bias already regularized into account:
+```{r regbiases1}
 ###computes the bias for the rows of the training set before regularizing
-t_v_b_pub <- as.numeric(sapply(training$Publisher, function(x)
-  bias_pub$b_pu[which(bias_pub$Publisher == x)]))
-t_v_b_pla <- as.numeric(sapply(training$Platform, function(x)
-  bias_plat$b_pla[which(bias_plat$Platform == x)]))
-t_v_b_ge <- as.numeric(sapply(training$Genre, function(x)
-  bias_genre$b_ge[which(bias_genre$Genre == x)]))
-t_v_b_yor <- as.numeric(sapply(training$Year_of_Release, function(x)
-  bias_yor$b_yor[which(bias_yor$Year_of_Release == x)]))
-t_v_b_rat <- as.numeric(sapply(training$Rating, function(x)
-  bias_rat$b_rat[which(bias_rat$Rating == x)]))
-t_v_b_dev <- as.numeric(sapply(training$Developer, function(x)
-  bias_dev$b_dev[which(bias_dev$Developer == x)]))
+t_v_b_pub <- sapply(training$Publisher, function(x)
+  bias_pub$b_pu[which(bias_pub$Publisher == x)])
+t_v_b_pla <- sapply(training$Platform, function(x)
+  bias_plat$b_pla[which(bias_plat$Platform == x)])
+t_v_b_ge <- sapply(training$Genre, function(x)
+  bias_genre$b_ge[which(bias_genre$Genre == x)])
+t_v_b_yor <- sapply(training$Year_of_Release, function(x)
+  bias_yor$b_yor[which(bias_yor$Year_of_Release == x)])
+t_v_b_rat <- sapply(training$Rating, function(x)
+  bias_rat$b_rat[which(bias_rat$Rating == x)])
+t_v_b_dev <- sapply(training$Developer, function(x)
+  bias_dev$b_dev[which(bias_dev$Developer == x)])
 
 ###regularization of publisher bias
 lambdas <- seq(0, 100, 1)
 #vector of RMSE for each lambda
 RMSEs_train <- sapply(lambdas, function(lam){
   reg_pub_bias <- bias_pub$sum_bpulog/(lam + bias_pub$count_pu) #regularized publisher bias
-  t_v_b_pub_reg <- as.numeric(sapply(training$Publisher, function(x)
-    reg_pub_bias[which(bias_pub$Publisher == x)]))
+  t_v_b_pub_reg <- sapply(training$Publisher, function(x)
+    reg_pub_bias[which(bias_pub$Publisher == x)])
   pred <- 10^(log10_mu + t_v_b_pub_reg +
                 t_v_b_pla + t_v_b_ge +
                 t_v_b_yor + t_v_b_rat + t_v_b_dev)
   fun_RMSE(training$Global_Sales, pred)
 })
 #working out the lambda that minimizes training RMSE
-plot(lambdas, RMSEs_train)
 lambda_pub <- lambdas[which.min(RMSEs_train)]
 #creating a new column for regularized publisher bias
 bias_pub <- bias_pub %>% mutate(reg_b_pub  = sum_bpulog/(lambda_pub + count_pu))
 #re compute the publisher bias for training set row with regularized data
-t_v_b_pub <- as.numeric(sapply(training$Publisher, function(x)
-  bias_pub$reg_b_pub[which(bias_pub$Publisher == x)]))
+t_v_b_pub <- sapply(training$Publisher, function(x)
+  bias_pub$reg_b_pub[which(bias_pub$Publisher == x)])
 
 ###regularization of platform bias
 lambdas <- seq(0, 100, 1)
 #vector of RMSE for each lambda
 RMSEs_train <- sapply(lambdas, function(lam){
   reg_pla_bias <- bias_plat$sum_bplalog/(lam + bias_plat$count_pla) #regularized platform bias
-  t_v_b_pla_reg <- as.numeric(sapply(training$Platform, function(x)
-    reg_pla_bias[which(bias_plat$Platform == x)]))
+  t_v_b_pla_reg <- sapply(training$Platform, function(x)
+    reg_pla_bias[which(bias_plat$Platform == x)])
   pred <- 10^(log10_mu + t_v_b_pub +
                 t_v_b_pla_reg + t_v_b_ge +
                 t_v_b_yor + t_v_b_rat + t_v_b_dev)
   fun_RMSE(training$Global_Sales, pred)
 })
 #working out the lambda that minimizes training RMSE
-plot(lambdas, RMSEs_train)
 lambda_plat <- lambdas[which.min(RMSEs_train)]
 #creating a new column for regularized platform bias
 bias_plat <- bias_plat %>% mutate(reg_b_pla  = sum_bplalog/(lambda_plat + count_pla))
 #re compute the platform bias for training set row with regularized data
-t_v_b_pla <- as.numeric(sapply(training$Platform, function(x)
-  bias_plat$reg_b_pla[which(bias_plat$Platform == x)]))
+t_v_b_pla <- sapply(training$Platform, function(x)
+  bias_plat$reg_b_pla[which(bias_plat$Platform == x)])
 
 ###regularization of genre bias
 lambdas <- seq(0, 100, 1)
 #vector of RMSE for each lambda
 RMSEs_train <- sapply(lambdas, function(lam){
   reg_ge_bias <- bias_genre$sum_bgelog/(lam + bias_genre$count_ge) #regularized genre bias
-  t_v_b_ge_reg <- as.numeric(sapply(training$Genre, function(x)
-    reg_ge_bias[which(bias_genre$Genre == x)]))
+  t_v_b_ge_reg <- sapply(training$Genre, function(x)
+    reg_ge_bias[which(bias_genre$Genre == x)])
   pred <- 10^(log10_mu + t_v_b_pub +
                 t_v_b_pla + t_v_b_ge_reg +
                 t_v_b_yor + t_v_b_rat + t_v_b_dev)
   fun_RMSE(training$Global_Sales, pred)
 })
 #working out the lambda that minimizes training RMSE
-plot(lambdas, RMSEs_train)
 lambda_ge <- lambdas[which.min(RMSEs_train)]
 #creating a new column for regularized genre bias
 bias_genre <- bias_genre %>% mutate(reg_b_ge  = sum_bgelog/(lambda_ge + count_ge))
 #re compute the genre bias for training set row with regularized data
-t_v_b_ge <- as.numeric(sapply(training$Genre, function(x)
-  bias_genre$reg_b_ge[which(bias_genre$Genre == x)]))
+t_v_b_ge <- sapply(training$Genre, function(x)
+  bias_genre$reg_b_ge[which(bias_genre$Genre == x)])
 
 ###regularization of year of release bias
 lambdas <- seq(20, 30, 1)
 #vector of RMSE for each lambda
 RMSEs_train <- sapply(lambdas, function(lam){
   reg_yor_bias <- bias_yor$sum_byorlog/(lam + bias_yor$count_yor) #regularized year of release bias
-  t_v_b_yor_reg <- as.numeric(sapply(training$Year_of_Release, function(x)
-    reg_yor_bias[which(bias_yor$Year_of_Release == x)]))
+  t_v_b_yor_reg <- sapply(training$Year_of_Release, function(x)
+    reg_yor_bias[which(bias_yor$Year_of_Release == x)])
   pred <- 10^(log10_mu + t_v_b_pub +
                 t_v_b_pla + t_v_b_ge +
                 t_v_b_yor_reg + t_v_b_rat + t_v_b_dev)
   fun_RMSE(training$Global_Sales, pred)
 })
 #working out the lambda that minimizes training RMSE
-plot(lambdas, RMSEs_train)
 lambda_yor <- lambdas[which.min(RMSEs_train)]
 #creating a new column for regularized release year bias
 bias_yor <- bias_yor %>% mutate(reg_b_yor  = sum_byorlog/(lambda_yor + count_yor))
 #re compute the release year bias for training set row with regularized data
-t_v_b_yor <- as.numeric(sapply(training$Year_of_Release, function(x)
-  bias_yor$reg_b_yor[which(bias_yor$Year_of_Release  == x)]))
+t_v_b_yor <- sapply(training$Year_of_Release, function(x)
+  bias_yor$reg_b_yor[which(bias_yor$Year_of_Release  == x)])
 
 ###regularization of rating bias
 lambdas <- seq(5, 100, 1)
 #vector of RMSE for each lambda
 RMSEs_train <- sapply(lambdas, function(lam){
   reg_rat_bias <- bias_rat$sum_bratlog/(lam + bias_rat$count_rat) #regularized rating bias
-  t_v_b_rat_reg <- as.numeric(sapply(training$Rating, function(x)
-    reg_rat_bias[which(bias_rat$Rating == x)]))
+  t_v_b_rat_reg <- sapply(training$Rating, function(x)
+    reg_rat_bias[which(bias_rat$Rating == x)])
   pred <- 10^(log10_mu + t_v_b_pub +
                 t_v_b_pla + t_v_b_ge +
                 t_v_b_yor + t_v_b_rat_reg + t_v_b_dev)
   fun_RMSE(training$Global_Sales, pred)
 })
 #working out the lambda that minimizes training RMSE
-plot(lambdas, RMSEs_train)
 lambda_rat <- lambdas[which.min(RMSEs_train)]
 #creating a new column for regularized rating bias
 bias_rat <- bias_rat %>% mutate(reg_b_rat  = sum_bratlog/(lambda_rat + count_rat))
 #re compute the rating bias for training set row with regularized data
-t_v_b_rat <- as.numeric(sapply(training$Rating, function(x)
-  bias_rat$reg_b_rat[which(bias_rat$Rating  == x)]))
+t_v_b_rat <- sapply(training$Rating, function(x)
+  bias_rat$reg_b_rat[which(bias_rat$Rating  == x)])
 
 ###regularization of developer bias
 lambdas <- seq(5, 100, 1)
 #vector of RMSE for each lambda
 RMSEs_train <- sapply(lambdas, function(lam){
   reg_dev_bias <- bias_dev$sum_bdevlog/(lam + bias_dev$count_dev) #regularized developer bias
-  t_v_b_dev_reg <- as.numeric(sapply(training$Developer, function(x)
-    reg_dev_bias[which(bias_dev$Developer == x)]))
+  t_v_b_dev_reg <- sapply(training$Developer, function(x)
+    reg_dev_bias[which(bias_dev$Developer == x)])
   pred <- 10^(log10_mu + t_v_b_pub +
                 t_v_b_pla + t_v_b_ge +
                 t_v_b_yor + t_v_b_rat + t_v_b_dev_reg)
   fun_RMSE(training$Global_Sales, pred)
 })
 #working out the lambda that minimizes training RMSE
-plot(lambdas, RMSEs_train)
 lambda_dev <- lambdas[which.min(RMSEs_train)]
 #creating a new column for regularized rating bias
 bias_dev <- bias_dev %>% mutate(reg_b_dev  = sum_bdevlog/(lambda_dev + count_dev))
 #re compute the rating bias for training set row with regularized data
-t_v_b_dev <- as.numeric(sapply(training$Developer, function(x)
-  bias_dev$reg_b_dev[which(bias_dev$Developer  == x)]))
+t_v_b_dev <- sapply(training$Developer, function(x)
+  bias_dev$reg_b_dev[which(bias_dev$Developer  == x)])
 
 ###computes the regularized bias fro each row of the test set
-vec_bias_pub <- as.numeric(sapply(test$Publisher, function(x)
-  bias_pub$reg_b_pub[which(bias_pub$Publisher == x)]))
-vec_bias_pla <- as.numeric(sapply(test$Platform, function(x)
-  bias_plat$reg_b_pla[which(bias_plat$Platform == x)]))
-vec_bias_ge <- as.numeric(sapply(test$Genre, function(x)
-  bias_genre$reg_b_ge[which(bias_genre$Genre == x)]))
-vec_bias_yor <- as.numeric(sapply(test$Year_of_Release, function(x)
-  bias_yor$reg_b_yor[which(bias_yor$Year_of_Release == x)]))
-vec_bias_rat <- as.numeric(sapply(test$Rating, function(x)
-  bias_rat$reg_b_rat[which(bias_rat$Rating == x)]))
-vec_bias_dev <- as.numeric(sapply(test$Developer, function(x)
-  bias_dev$reg_b_dev[which(bias_dev$Developer == x)]))
+vec_bias_pub <- sapply(test$Publisher, function(x)
+  bias_pub$reg_b_pub[which(bias_pub$Publisher == x)])
+vec_bias_pla <- sapply(test$Platform, function(x)
+  bias_plat$reg_b_pla[which(bias_plat$Platform == x)])
+vec_bias_ge <- sapply(test$Genre, function(x)
+  bias_genre$reg_b_ge[which(bias_genre$Genre == x)])
+vec_bias_yor <- sapply(test$Year_of_Release, function(x)
+  bias_yor$reg_b_yor[which(bias_yor$Year_of_Release == x)])
+vec_bias_rat <- sapply(test$Rating, function(x)
+  bias_rat$reg_b_rat[which(bias_rat$Rating == x)])
+vec_bias_dev <- sapply(test$Developer, function(x)
+  bias_dev$reg_b_dev[which(bias_dev$Developer == x)])
 
+###free memory
+rm(lambdas, lambda_ge, lambda_plat, lambda_pub, lambda_rat,
+   lambda_yor, lambda_dev, RMSEs_train, pred)
+```
+Let's now make the predictions and evaluate the RMSE:
+```{r LM2}
 #using the four bias to make predictions
 pred = 10^(log10_mu + vec_bias_pub + vec_bias_pla + vec_bias_ge +
              vec_bias_yor + vec_bias_rat + vec_bias_dev)
 RMSE <- fun_RMSE(test$Global_Sales, pred)
 #keep track of RMSE
 mat_RMSE <- rbind(mat_RMSE, c("LM: Worldwide with regularized environmental bias", RMSE))
+```
+```{r mat_RMSE2, echo=FALSE}
 mat_RMSE
+```
+The RMSE is now around 2.60, which is slightly better. But I have not used reviews yet.
 
-###free memory
-rm(lambdas, lambda_ge, lambda_plat, lambda_pub, lambda_rat,
-   lambda_yor, lambda_dev, RMSEs_train, pred)
+### II)C)2)Using reviews
 
-#######################################################
-###      worldwide: taking reviews into account
-#######################################################
+Let's first look at the data to see if a correlation exists between review score and review count, or between review score and global sales.
 
+```{r scores graph, echo=FALSE}
 ###exploratory data analysis
 training %>%
   ggplot(aes(Critic_Count, Critic_Score)) +
@@ -456,7 +578,11 @@ scores_set <- training %>%
   select(gameId, logGlobal_Sales, Critic_Score, Critic_Count, User_Score, User_Count) %>%
   mutate(sumCritScore = Critic_Count*Critic_Score, sumUserScore = User_Count*User_Score)
 #the two columns added will be useful for regularization
-
+```
+From these graphs we can see that there is no actual correlation between high scores and high sales, nor between review score and review count. Also, there are a lot of games with high score and low review count, which calls for regularization later. Let's first evaluate the impact of review through a linear model:
+$$log_{10}(prediction) = log_{10}(\mu) + b_{pub} + b_{pla} + b_{ge} + b_{yor} + b_{rat} + b_{dev} + \alpha \cdot UserScore + \beta \cdot CriticScore + \gamma $$
+This code fits the linear model:
+```{r review}
 ###fits a linear model for critic and user score
 fitFormula <- logGlobal_Sales -
   (log10_mu + t_v_b_pub + t_v_b_pla + t_v_b_ge +
@@ -467,7 +593,9 @@ intercept <- fit$coefficients[1]
 alpha <- fit$coefficients[2]
 beta <- fit$coefficients[3]
 rm(fit)
-
+```
+From the R² of the fit, one can see that this model is far from perfect, but is a step further toward improving the previous model. Let's see if it lowers the RMSE:
+```{r LM3}
 ###using the environmental bias and scores to make predictions
 pred = 10^(log10_mu + vec_bias_pub + vec_bias_pla + vec_bias_ge +
              vec_bias_yor + vec_bias_rat + vec_bias_dev +
@@ -475,14 +603,12 @@ pred = 10^(log10_mu + vec_bias_pub + vec_bias_pla + vec_bias_ge +
 RMSE <- fun_RMSE(test$Global_Sales, pred)
 #keep track of RMSE
 mat_RMSE <- rbind(mat_RMSE, c("LM: Worldwide with regularized environmental bias and score linear model", RMSE))
+```
+```{r mat_RMSE3, echo=FALSE}
 mat_RMSE
-
-
-
-#######################################################
-###      worldwide: regularizing reviews
-#######################################################
-
+```
+The RMSE is now 2.38, which is again a slight improvement. The help of regularization should help to decrease it further:
+```{r regu review}
 ###regularization of critic score
 lambdas <- seq(20, 150, 1)
 #vector of RMSE for each lambda
@@ -494,7 +620,6 @@ RMSEs_train <- sapply(lambdas, function(lam){
   fun_RMSE(training$Global_Sales, pred)
 })
 #working out the lambda that minimizes training RMSE
-plot(lambdas, RMSEs_train)
 lambda_crit <- lambdas[which.min(RMSEs_train)]
 #adding regularized column to test and train set
 training <- training %>% mutate(Critic_Score_Reg = scores_set$sumCritScore/(lambda_crit + scores_set$Critic_Count))
@@ -511,7 +636,6 @@ RMSEs_train <- sapply(lambdas, function(lam){
   fun_RMSE(training$Global_Sales, pred)
 })
 #working out the lambda that minimizes training RMSE
-plot(lambdas, RMSEs_train)
 lambda_user <- lambdas[which.min(RMSEs_train)]
 #adding regularized column to test and train set
 training <- training %>% mutate(User_Score_Reg = scores_set$sumUserScore/(lambda_user + scores_set$User_Count))
@@ -524,14 +648,21 @@ pred = 10^(log10_mu + vec_bias_pub + vec_bias_pla + vec_bias_ge +
 RMSE <- fun_RMSE(test$Global_Sales, pred)
 #keep track of RMSE
 mat_RMSE <- rbind(mat_RMSE, c("LM: Worldwide with environmental bias and score linear model both regularized", RMSE))
+```
+```{r mat_RMSE4, echo=FALSE}
 mat_RMSE
+```
+With the use of regularized reviews, the RMSE has a huge drop: it's now at 0.85. One can explain because there are lot of games with a good score (especially user score) and low review count.
 
+The RMSE of 0.85 means that this model is somewhat accurate to predict video games sales: being less than 100% off the real sales number when looking at a market with such difference in scale is quite good.
 
+### II)C)3)Linear model to predict region sales
 
-#######################################################
-###      R environment cleaning
-#######################################################
+Let's see if the same model can spot regional trends: I can use it to predict the sales for a given game in each region (North America, European Union, Japan and the rest of the world), sum it to have a worldwide sales prediction and compare it to actual values.
 
+Since it's the same process than before, I put it in a function. I first needed a bit of data processing: since I work with the log of sales and some games did not sale a single unit in some region, the log is -$\infty$, which makes it impossible to work with it. For this purpose, I arbitrarily chose that instead of selling no unit in a given region, the game sold just 1 unit. With that, the log is now 0 and everything is computable again.
+
+```{r, echo=FALSE}
 ###remove added columns to both datasets
 test <- test %>% select(-User_Score_Reg, -Critic_Score_Reg)
 training <- training %>% select(-logGlobal_Sales, -User_Score_Reg, -Critic_Score_Reg)
@@ -848,7 +979,8 @@ fun_Region_Pred_LM <- function(Region_Sales_train)
   
   return(pred_Region)
 }
-
+```
+```{r}
 #use the fun_Region_Pred_LM function to predict the sales in each region
 pred_NA <- fun_Region_Pred_LM(training$NA_Sales)
 pred_EU <- fun_Region_Pred_LM(training$EU_Sales)
@@ -867,29 +999,43 @@ rm(pred_EU, pred_JP, pred_NA, pred_Other)
 RMSE <- fun_RMSE(test$Global_Sales, pred)
 ###keeping track of the RMSE
 mat_RMSE <- rbind(mat_RMSE, c("LM: Region-wise with environmental bias and score linear model both regularized", RMSE))
+```
+```{r mat_RMSE5, echo=FALSE}
 mat_RMSE
+```
+When using the predictions for each region, I end up with a RMSE of 0.92, which is slightly worse but very similar to the worldwide RMSE of 0.85. It means that this model can predict regional trends almost as well as worldwide trends. This model works well with different scales: for instance in Japan there are a few typical games that sold well and a lot of games saw very few sales there, but the model is still able to predict these few sales with a good accuracy.
 
+## II)D)Using K-nearest-neighbors algorithm
 
-#######################################################
-###                   KNN with reviews
-#######################################################
+Since this project requires us to use at least two different algorithms, I chose to use the K-nearest-neighbors (KNN) algorithm. This algorithm searches for the K closest games (for a given distance) from the game whose sales are to be predicted, and predicts the mean of sales of these K games.
 
+This algorithm has an advantage versus linear model: I had to guess what model I needed to use to predict the sales of a game (using the log of sales rather than sales themselves), with KNN I don't have to since it uses the nearest neighbor's value without having to fit a model.
+
+### II)D)1)Using KNN with review as a distance
+
+The next step is to select a distance to work out the nearest neighbors of a game. The first thing I tried was the reviews, the only (apart from sales) numeric value of the dataset. This is is not really meant to have a great RMSE, but rather to find a good value of K.
+
+```{r KNN reviews}
 ###first estimation using only User and Critic score
 train_knn <- train(Global_Sales ~ User_Score + Critic_Score,
-                   data = training,
-                   method = "knn",
-                   tuneGrid = data.frame(k = seq(3,15,2)))
+             data = training,
+             method = "knn",
+             tuneGrid = data.frame(k = seq(3,15,2)))
 train_knn$bestTune
 pred <- predict(train_knn, test)
 RMSE <- fun_RMSE(test$Global_Sales, pred)
 mat_RMSE <- rbind(mat_RMSE, c("KNN: Worldwide with score review", RMSE))
+```
+It seems the best K to use is 15, which seemed a little high for me, since K is usually between 5 and 10. Furthermore, the metric use by KNN to pick the most accurate K is the absolute RMSE, not the relative one, which makes high selling games weight more than low selling games.
+```{r mat_RMSE, echo=FALSE}
 mat_RMSE
+```
+The result here is obviously not good, it is actually more than two times worse than the naive method of using the average, that is terribly bad. Let's see how much I can improve it by selecting another distance.
 
+### II)D)2)Using KNN with sum of sales environmental variables as a distance
 
-#######################################################
-###                   KNN with sum of sales
-#######################################################
-
+I thought that using the sum of sales for each environmental variable was likely to provide a good estimate of the sales: I computed the sum of sales for each publisher, platform, genre, year of release, rating and developer. If two games are close for this distance, it means that they are likely to be of the same publisher, developer or genre, to be available on the same platform, etc. With this distance, two games that are neighbors are the one that share the most "environmental" variables. Let's construct this distance:
+```{r knn dist}
 ###creating a distance using sum of sales for each environmental variable
 #compute the sum (and other data) for each publisher/platform/etc
 pub <- training %>% group_by(Publisher) %>%
@@ -950,7 +1096,10 @@ test$sum_Rat <- sapply(test$Publisher, function(x)
   pub$sum[which(pub$Publisher == x)])
 test$sum_Dev <- sapply(test$Developer, function(x)
   dev$sum[which(dev$Developer == x)])
+```
 
+I also wanted to manually select the best K using cross-validation on the training set, which is done in this code:
+```{r cross val}
 ###using cross validation to manually select the best K
 set.seed(1, sample.kind = "Rounding")
 Ks <- seq(3,15,2)
@@ -959,6 +1108,7 @@ RMSEs_train <- sapply(Ks, function(x){
   indexes <- createDataPartition(training$gameId, times = 1, p = 0.2, list=FALSE) 
   validation <- training[indexes,]
   inner_training <- training[-indexes,]
+  #fits the model on the "inner training" set
   train_knn <- train(Global_Sales ~ sum_Pub+sum_Pla+sum_Gen+sum_Yor+sum_Rat+sum_Dev,
                      data = inner_training,
                      method = "knn",
@@ -968,22 +1118,28 @@ RMSEs_train <- sapply(Ks, function(x){
 })
 optiK <- Ks[which.min(RMSEs_train)]
 rm(RMSEs_train, Ks)
-
-
+optiK
+```
+It turns out the optimal value of K for the RMSE I'm using is likely to be 5. Let's use KNN on the sum of sales for environmental variables for K=5:
+```{r}
 ###knn using the sum for each environmental variable
 train_knn <- train(Global_Sales ~ sum_Pub+sum_Pla+sum_Gen+sum_Yor+sum_Rat+sum_Dev,
-                   data = training,
-                   method = "knn",
-                   tuneGrid = data.frame(k = optiK))
+                    data = training,
+                    method = "knn",
+                    tuneGrid = data.frame(k = optiK))
 pred <- predict(train_knn, test)
 RMSE <- fun_RMSE(test$Global_Sales, pred)
-mat_RMSE <- rbind(mat_RMSE, c("KNN: Worldwide with sum of sales for environmental variables, K from cross validation", RMSE))
+mat_RMSE <- rbind(mat_RMSE, c("KNN with sum of sales for environmental variables, K from cross validation", RMSE))
+```
+```{r mat_RMSE6, echo=FALSE}
 mat_RMSE
+```
+The RMSE is now 7.2, which is better but still way worse than any RMSE I got using the linear model.
 
-#######################################################
-###                   KNN with mean of sales
-#######################################################
+### II)D)3)Using KNN with mean of sales environmental variables as a distance
 
+I tried a version with the mean (instead of the sum) of sales for each environmental variable, which improves the RMSE a little bit:
+```{r}
 ###removing columns for sum of sales
 training <- training %>% select(-sum_Pub, -sum_Pla, -sum_Gen, -sum_Yor, -sum_Rat, -sum_Dev)
 test <- test %>% select(-sum_Pub, -sum_Pla, -sum_Gen, -sum_Yor, -sum_Rat, -sum_Dev)
@@ -1042,19 +1198,22 @@ train_knn <- train(Global_Sales ~ mean_Pub+mean_Pla+mean_Gen+mean_Yor+mean_Rat+m
 pred<- predict(train_knn, test)
 RMSE <- fun_RMSE(test$Global_Sales, pred)
 mat_RMSE <- rbind(mat_RMSE, c("KNN: Worldwide with mean of sales for environmental variables, K from cross validation", RMSE))
-mat_RMSE
 
 ###free memory
 #delete variables
-rm(dev, gen, pla, pub, rat, yor, train_knn, optiK)
+rm(dev, gen, pla, pub, rat, yor, train_knn)
 #removing columns for mean of sales
 training <- training %>% select(-mean_Pub, -mean_Pla, -mean_Gen, -mean_Yor, -mean_Rat, -mean_Dev)
 test <- test %>% select(-mean_Pub, -mean_Pla, -mean_Gen, -mean_Yor, -mean_Rat, -mean_Dev)
+```
+```{r mat_RMSE7, echo=FALSE}
+mat_RMSE
+```
 
-#######################################################
-###                   Region-wise KNN
-#######################################################
+### II)D)4)KNN to predict region sales
 
+Just like the linear model, I made a function, that is essentially a copy/paste of the previous code, to try to predict region sales. The aim is to see if KNN can spot regional trends in sales.
+```{r knn region, echo=FALSE}
 fun_Region_Pred_KNN <- function(Region_Sales_train)
 {
   training <- training %>% mutate(Region_Sales_train)
@@ -1091,30 +1250,30 @@ fun_Region_Pred_KNN <- function(Region_Sales_train)
               .groups="drop")
   
   ###adding matching columns to both training and test set
-  training$mean_Pub <- as.numeric(sapply(training$Publisher, function(x)
-    pub$mean[which(pub$Publisher == x)]))
-  training$mean_Pla <- as.numeric(sapply(training$Platform, function(x)
-    pla$mean[which(pla$Platform == x)]))
-  training$mean_Gen <- as.numeric(sapply(training$Genre, function(x)
-    gen$mean[which(gen$Genre == x)]))
-  training$mean_Yor <- as.numeric(sapply(training$Year_of_Release, function(x)
-    yor$mean[which(yor$Year_of_Release == x)]))
-  training$mean_Rat <- as.numeric(sapply(training$Publisher, function(x)
-    pub$mean[which(pub$Publisher == x)]))
-  training$mean_Dev <- as.numeric(sapply(training$Developer, function(x)
-    dev$mean[which(dev$Developer == x)]))
-  test$mean_Pub <- as.numeric(sapply(test$Publisher, function(x)
-    pub$mean[which(pub$Publisher == x)]))
-  test$mean_Pla <- as.numeric(sapply(test$Platform, function(x)
-    pla$mean[which(pla$Platform == x)]))
-  test$mean_Gen <- as.numeric(sapply(test$Genre, function(x)
-    gen$mean[which(gen$Genre == x)]))
-  test$mean_Yor <- as.numeric(sapply(test$Year_of_Release, function(x)
-    yor$mean[which(yor$Year_of_Release == x)]))
-  test$mean_Rat <- as.numeric(sapply(test$Publisher, function(x)
-    pub$mean[which(pub$Publisher == x)]))
-  test$mean_Dev <- as.numeric(sapply(test$Developer, function(x)
-    dev$mean[which(dev$Developer == x)]))
+  training$mean_Pub <- sapply(training$Publisher, function(x)
+    pub$mean[which(pub$Publisher == x)])
+  training$mean_Pla <- sapply(training$Platform, function(x)
+    pla$mean[which(pla$Platform == x)])
+  training$mean_Gen <- sapply(training$Genre, function(x)
+    gen$mean[which(gen$Genre == x)])
+  training$mean_Yor <- sapply(training$Year_of_Release, function(x)
+    yor$mean[which(yor$Year_of_Release == x)])
+  training$mean_Rat <- sapply(training$Publisher, function(x)
+    pub$mean[which(pub$Publisher == x)])
+  training$mean_Dev <- sapply(training$Developer, function(x)
+    dev$mean[which(dev$Developer == x)])
+  test$mean_Pub <- sapply(test$Publisher, function(x)
+    pub$mean[which(pub$Publisher == x)])
+  test$mean_Pla <- sapply(test$Platform, function(x)
+    pla$mean[which(pla$Platform == x)])
+  test$mean_Gen <- sapply(test$Genre, function(x)
+    gen$mean[which(gen$Genre == x)])
+  test$mean_Yor <- sapply(test$Year_of_Release, function(x)
+    yor$mean[which(yor$Year_of_Release == x)])
+  test$mean_Rat <- sapply(test$Publisher, function(x)
+    pub$mean[which(pub$Publisher == x)])
+  test$mean_Dev <- sapply(test$Developer, function(x)
+    dev$mean[which(dev$Developer == x)])
   
   ###using cross validation to manually select the best K
   set.seed(Region_Sales_train[1], sample.kind = "Rounding")
@@ -1147,7 +1306,8 @@ fun_Region_Pred_KNN <- function(Region_Sales_train)
   
   return(pred)
 }
-
+```
+```{r}
 ###use the fun_Region_Pred_KNN function to predict the sales in each region
 pred_NA <- fun_Region_Pred_KNN(training$NA_Sales)
 pred_EU <- fun_Region_Pred_KNN(training$EU_Sales)
@@ -1160,16 +1320,16 @@ rm(pred_EU, pred_JP, pred_NA, pred_Other)
 RMSE <- fun_RMSE(test$Global_Sales, pred)
 ###keeping track of the RMSE
 mat_RMSE <- rbind(mat_RMSE, c("KNN: Region-wise with mean of sales for environmental variables, K from cross validation", RMSE))
-rm(pred, RMSE)
+```
+```{r mat_RMSE8, echo=FALSE}
 mat_RMSE
+```
+The RMSE is now greater than 25. Just to recall, it means the prediction is 2500% away from the real sales, that is around 6 times worse than the naive prediction! With this, I know that the KNN method is unable to detect small trends. Which made me think that KNN may actually be unable to do good predictions for small values of sales. It requires further exploration.
 
+### II)D)4)Exploration of KNN predictions
 
-
-
-#######################################################
-###   Data exploratory analysis: LM versus KNN
-#######################################################
-
+I created a training subset, to use sort of a cross-validation (with only one resample).
+```{r resample}
 ###creates sets for cross validation
 set.seed(1234, sample.kind = "Rounding")
 #20% of validation, 80% of "inner training"
@@ -1186,7 +1346,9 @@ validation <- temp %>%
 removed <- anti_join(temp, validation)
 sub_training <- rbind(sub_training, removed)
 rm(temp, removed)
-
+```
+I then had some trouble using my previous functions to make predictions for both linear model and K-nearest-neighbors, so I ran the entire process again, the code is not included here because it's very long and similar to what I've already done. pred_LM and pred_KNN are the predictions on the validation set respectively for the linear model and for K-nearest-neighbors.
+```{r, echo=FALSE}
 ###making predictions using both KNN and LM
 #cant use functions above, because sets are not training and test
 #predictions linear model
@@ -1540,8 +1702,9 @@ pred_KNN <- predict(train_knn, validation)
   sub_training <- sub_training %>% select(-mean_Pub, -mean_Pla, -mean_Gen, -mean_Yor, -mean_Rat, -mean_Dev)
   validation <- validation %>% select(-mean_Pub, -mean_Pla, -mean_Gen, -mean_Yor, -mean_Rat, -mean_Dev)
   rm(dev, gen, pla, pub, rat, train_knn, yor, optiK)
-  
-  
+```
+Once the predictions for the validation set are done, I computed the squared error for each prediction:
+```{r}
 ###compute the squared error and the RMSE for both KNN and LM
 fun_RMSE(validation$Global_Sales, pred_LM)
 fun_RMSE(validation$Global_Sales, pred_KNN)
@@ -1551,6 +1714,9 @@ SE_rel_KNN <- ( (validation$Global_Sales - pred_KNN)/validation$Global_Sales )^2
 ###EDA
 mean(SE_rel_KNN < SE_rel_LM)
 df <- data.frame(validation$Global_Sales, SE_rel_LM, SE_rel_KNN)
+```
+Just like before, the RMSE is much higher for KNN than for LM, but I was surprised to see that almost half the predictions are better with the KNN algorithm. It means that KNN is slightly better than LM half of the time, and way worse the other half of the time...but is there som kind of trend?
+```{r, echo=FALSE}
 colors <- c("LM" = "blue", "KNN" = "red")
 df %>% ggplot() +
   geom_point(aes(x=validation.Global_Sales, y=SE_rel_KNN, color="KNN")) +
@@ -1558,8 +1724,13 @@ df %>% ggplot() +
   xlab("Global Sales") +
   ylab("Relative error with KNN or LM") +
   ggtitle("Accuracy of KNN and LM model versus number of copies sold")
+```
+On this first graph we can see that there are some very high errors for KNN, these errors drive the RMSE towards higher values, but they are mainly made for games with low amount of sales. We can reduce the scope of the graphic: when considering only predictions with an squared error lesser than 5, we still have about 94% of the LM predictions, and 78% of the KNN predictions.
+```{r}
 mean(SE_rel_KNN < 5)
 mean(SE_rel_LM < 5)
+```
+```{r, echo=FALSE}
 df %>% ggplot() +
   geom_point(aes(x=validation.Global_Sales, y=SE_rel_KNN, color="KNN")) +
   geom_point(aes(x=validation.Global_Sales, y=SE_rel_LM, color="LM")) +
@@ -1567,8 +1738,13 @@ df %>% ggplot() +
   xlab("Global Sales") +
   ylab("Relative error with KNN or LM") +
   ggtitle("Accuracy of KNN and LM model versus number of copies sold")
+```
+With this second graph, we can start to spot a trend: above a given amount of sales, KNN predictions tend to be more accurate than LM. Let's reduce the scope again: when considering only predictions with an squared error lesser than 1, we still have about 89% of the LM predictions, and 64% of the KNN predictions.
+```{r}
 mean(SE_rel_KNN < 1)
 mean(SE_rel_LM < 1)
+```
+```{r, echo=FALSE}
 df %>% ggplot() +
   geom_point(aes(x=validation.Global_Sales, y=SE_rel_KNN, color="KNN")) +
   geom_point(aes(x=validation.Global_Sales, y=SE_rel_LM, color="LM")) +
@@ -1578,10 +1754,15 @@ df %>% ggplot() +
   ylab("Relative error with KNN or LM") +
   ggtitle("Accuracy of KNN and LM model versus number of copies sold") +
   geom_vline(xintercept =  0.09*10^7)
+```
+On this last graph we can try to estimate the threshold above which KNN is likely to be more accurate than LM. Above is a graphic representation of such a threshold: on the right hand side of the threshold, almost all the red dots (KNN predictions) are below (more accurate) the blue dots (LM predictions). With the threshold above ($0.09 \times 10^7$), 88% percent of KNN predictions after said threshold are more accurate than LM predictions.
+```{r}
 threshold <- 0.09*10^7
 mean(SE_rel_KNN[which(validation$Global_Sales > threshold)] < 
        SE_rel_LM[which(validation$Global_Sales > threshold)])
-
+```
+However, it only applies to a small amount of predictions. We can compute a better estimate of the ideal threshold:
+```{r, echo=FALSE}
 threshs <- seq(0.05*10^7, 0.375*10^7, 0.025*10^7)
 means <- sapply(threshs, function(x) 
                   mean(SE_rel_KNN[which(validation$Global_Sales > x)] < 
@@ -1591,19 +1772,25 @@ ggplot(aes(x=threshs, y=means), data=NULL) +
   xlab("Thresholds") +
   ylab("Percentage of KNN errors being less than LM error") +
   ggtitle("Percentage of KNN errors being less than LM error for sales above given a threshold")
+```
+```{r}
 max(means)
 threshold <- threshs[which.max(means)]
 threshold
-
+```
+```{r, echo=FALSE}
 ###free memory
 rm(indexes, sub_training, validation, df, colors)
 rm(pred_KNN, pred_LM, SE_rel_KNN, SE_rel_LM, means, threshs)
+```
+The ideal threshold on this training subset is $0.125 \times 10^7$, achieving a better result with KNN for almost 90% of the predictions. Let's see if we can build another model using this threshold.
 
+## II)E)Building a hybrid theory
 
-#######################################################
-###               Hybrid theory: Worldwide
-#######################################################
+With all the models previously made, I can summarize the observations: a linear model has a bad accuracy for low sales but a good accuracy for games with a high amount of sales; whereas K-nearest-neighbors algorithm has terrible accuracy for low sales and a very good accuracy for high-selling games. One would want the best of both models.
 
+This is actually quite easy to make: it requires to make predictions for bith KNN and LM, and for each game if a given test is passed, we select the KNN prediction, otherwise we select the LM prediction. The said test should involve LM and/or KNN predictions and the threshold computed earlier on the training subset. I chose to use "if the linear model prediction is higher than the threshold" as a test, because since the KNN predictions have more variability, using only the linear model prediction gives more reliability to this hybrid theory. Here is the code to implement it:
+```{r}
 ###making prediction using hybrid theory
 pred_LM <- fun_Region_Pred_LM(training$Global_Sales)
 pred_KNN <- fun_Region_Pred_KNN(training$Global_Sales)
@@ -1611,8 +1798,13 @@ pred_KNN <- fun_Region_Pred_KNN(training$Global_Sales)
 ###combining the predictions
 pred <- ifelse( pred_LM>threshold, pred_KNN, pred_LM)
 RMSE <- fun_RMSE(test$Global_Sales, pred)
-
-
+mat_RMSE <- rbind(mat_RMSE, c("Hybrid theory (LM under a given threshold, KNN above said threshold): Worldwide", RMSE))
+```
+```{r, echo=FALSE}
+mat_RMSE
+```
+The RMSE of this model is 2.05, which is both quite good and a little disappointing. It's quite good because it's by far the best RMSE I have for a model including KNN (it's even better than most linear models' RMSE), but it is still disappointing because I thought the use of KNN would decrease the RMSE even further than the best linear model. To understand why it didn't do so, we can look at the test data (that are similar to the validation subset shown earlier):
+```{r, echo=FALSE}
 SE_rel_LM <- ( (test$Global_Sales - pred_LM)/test$Global_Sales )^2
 SE_rel_KNN <- ( (test$Global_Sales - pred_KNN)/test$Global_Sales )^2
 colors <- c("LM" = "blue", "KNN" = "red")
@@ -1621,15 +1813,54 @@ ggplot(data=test) +
   geom_point(aes(x=Global_Sales, y=SE_rel_LM, color="LM")) +
   ylim(0,5) +
   geom_vline(xintercept =  threshold)
-
-###keeping track of the RMSE
-mat_RMSE <- rbind(mat_RMSE, c("Hybrid theory (LM under a given threshold, KNN above said threshold): Worldwide", RMSE))
 rm(pred, RMSE, threshold, pred_LM, pred_KNN, colors, SE_rel_KNN, SE_rel_LM)
+```
+As I planned, most of the predictions above the threshold are better for KNN, but in the end it only includes a minority of games. Furthermore, the improvement of LM over KNN for low sales is greater than the improvement of KNN over LM for high sales, and since there are more games with low sales than high sales, the linear model stays the best model overall. One can try to push the threshold further, so that there are more LM predictions, but the model will then asymptotically be equivalent to the linear model, with very little improvement for high sales.
 
-#######################################################
-###               Conclusion
-#######################################################
+When using the relative RMSE as metric, this model is not better than the linear model since every game is worth the same and this model is only better for a few percents of the top sales. However, if I were to use the absolute RMSE as a metric, this model would likely be better than the linear model, since it makes the same errors for low sales (not very impactful for absolute RMSE) and that the slight percentage improvement for top sales would become a huge absolute improvement.
 
+# III)Results
+
+## III)A)RMSE imporvement
+
+Here is the final RMSE table:
+```{r, echo=FALSE}
 mat_RMSE
 "Best model:"
 mat_RMSE[which.min(mat_RMSE[,2]), ]
+```
+The best model is a linear model, for which predictions are given by:
+$$log_{10}(prediction) = log_{10}(\mu) + b_{pub} + b_{pla} + b_{ge} + b_{yor} + b_{rat} + b_{dev} + \alpha \cdot UserScore + \beta \cdot CriticScore + \gamma$$
+With $\mu$ being the average amount of copies sold, $b$ the bias, respectively for Publisher, Platform, Genre, Year of release, Rating and Developer, and $\alpha$ $\beta$ and $\gamma$ being constants that optimize the linear model predictions. All the biases and scores used in this model are regularized.
+
+## III)B)Discussion
+
+We can see that RMSE has a high variability for different methods. The best RMSE I computed is below 100%, meanwhile the worst is above 2500%. Even though this ration of 25 is very impressive, that doesn't mean the best model here is objectively better under every circumstance. There are at least two reasons to be acknowledged:
+
+- The result discussed here is obviously dependent from the metric of evaluation I chose earlier: KNN algorithm has a worse RMSE, but has better predictions for high selling games, which means the absolute RMSE for KNN could be better than the one for linear model.
+
+- The video games market is particular in the way that there are huge differences of scale between high selling AAA games and small independent games. This particular configuration may make KNN less effective in it's predictions, because even the nearest-neighbors (when it comes to environmental values, i.e. publisher, platform, genre, release date, rating and developer) may already be on a different scale when it comes to sales.
+
+Furthermore, the linear model is not entirely linear, since the predictions do not have a linear relationship with predictors, but instead the log of predictions have a linear relationship with the log of predictors, which accounts for multiplicative effects. KNN does not allow that.
+
+To sum things up, the linear model better suited this particular dataset, due to the error metric used, scale effects and the use of multiplicative (rather than additive) biases.
+
+# IV)Conclusion
+
+## IV)A)Summary
+
+I studied the the Video Games Sales dataset available on Kaggle. The aim was to predict the worldwide sales for games given their environmental variables (publisher, platform, genre, release date, ESRB rating and developer) and their Metacritic review score. This aim seems light-hearted or irrelevant, but the video games industry is already a huge economic sector, that is still growing to this day. The relative RMSE was used as a metric of evaluation. The two main models used were a linear model (with regularization) and the K-nearest-neighbors algorithm (with cross-validation). I briefly tried to combine both models to get the best of both.
+
+The best model, a linear model, achieved a RMSE of 85%, which seems a lot at the first glance, but is actually not that bad given the scale difference in sales specific to the video game industry. However, one must recall that this is foremost an educational project (I had no previous experience in data science), so the results here may be greatly improvable for any skilled data scientist out there.
+
+## IV)B)Limitation and possible improvements
+
+Limitation for this project mainly come from my own skills being limited: I chose to use K-nearest-neighbors because I was not sure how to properly use more advanced techniques (such as principle component analysis or matrix factorization) for this project.
+
+Hardware improvement are not to be very useful here, because the dataset is relatively small (1.54 MB) so that even most complex algorithms will be quite fast to run.
+
+Due to said skill limitations, I am not really sure how I could significantly improve the project myself. One of the only thing I thought was using a version of KNN that would compute the geometric mean (instead of the arithmetic mean) of the nearest neighbors' sales to improve KNN predictions, especially for low selling games (the geometric mean is lesser than the arithmetic one, whereas KNN predictions tend to be higher than the actual values). However, I do not doubt someone more skilled than me could improve this model further.
+
+
+
+#### Thanks for reading, have a great day!
